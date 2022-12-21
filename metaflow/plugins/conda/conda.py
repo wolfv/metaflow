@@ -3,6 +3,7 @@ import os
 import json
 import subprocess
 import time
+import requests
 from distutils.version import LooseVersion
 
 from metaflow.exception import MetaflowException
@@ -39,7 +40,9 @@ class Conda(object):
             )
         # Check for a minimum version for conda when conda or mamba is used
         # for dependency resolution.
+
         if dependency_solver == "conda" or dependency_solver == "mamba":
+            print(self._info())
             if LooseVersion(self._info()["conda_version"]) < LooseVersion("4.6.0"):
                 msg = "Conda version 4.6.0 or newer is required."
                 if dependency_solver == "mamba":
@@ -63,15 +66,18 @@ class Conda(object):
         architecture=None,
         explicit=False,
         disable_safety_checks=False,
+        create_local=True,
     ):
         # Create the conda environment
         try:
             with CondaLock(self._env_lock_file(env_id)):
-                self._remove(env_id)
-                self._create(
-                    env_id, deps, explicit, architecture, disable_safety_checks
-                )
-                return self._deps(env_id)
+                # return self.get_deps(env_id, deps, architecture)
+                return self.create_conda_env(env_id, specs=deps, architecture=architecture)
+                # self._remove(env_id)
+                # self._create(
+                #     env_id, deps, explicit, architecture, disable_safety_checks
+                # )
+                # return self._deps(env_id)
         except CondaException as e:
             raise CondaStepException(e, step_name)
 
@@ -112,6 +118,42 @@ class Conda(object):
     def _info(self):
         return json.loads(self._call_conda(["info"]))
 
+    def create_conda_env(self, name, specs, architecture=None):
+        if isinstance(specs[0], bytes):
+            specs = [s.decode('utf8') for s in specs]
+
+        def to_return(infos):
+            exact_deps = []
+            order = []
+            for i in infos:
+                url = i["url"]
+                fn = url.rsplit("/", 1)[1]
+                if fn.endswith(".tar.bz2"):
+                    fnx = fn[:-8]
+                elif fn.endswith(".conda"):
+                    fnx = fn[:-6]
+
+                name, version, build = fnx.rsplit('-', 2)
+                exact_deps.append(f"{name}={version}={build}")
+                order.append(fn)
+            return (exact_deps, infos, order)
+
+        # if all(["conda.anaconda.org" in s for s in specs]):
+            # print("Specs are already predetermined ... ", specs)
+            # return to_return(specs)
+
+        env = {
+            "name": name,
+            "channels": ["conda-forge"],
+            "virtual_packages": [],
+            "specs": [s for s in specs],
+        }
+
+        response = requests.post("http://localhost:1234/solve", json=env)
+        # print(response.json())
+        return to_return(response.json()["packages"])
+        return (exact_deps, urls, order)
+
     def _create(
         self,
         env_id,
@@ -121,12 +163,13 @@ class Conda(object):
         disable_safety_checks=False,
     ):
         cmd = ["create", "--yes", "--no-default-packages", "--name", env_id, "--quiet"]
-        if explicit:
-            cmd.append("--no-deps")
-        cmd.extend(deps)
-        self._call_conda(
-            cmd, architecture=architecture, disable_safety_checks=disable_safety_checks
-        )
+        # if explicit:
+        #     cmd.append("--no-deps")
+        # cmd.extend(deps)
+        self.create_conda_env(name=env_id, specs=deps, architecture=architecture)
+        # self._call_conda(
+        #     cmd, architecture=architecture, disable_safety_checks=disable_safety_checks
+        # )
 
     def _remove(self, env_id):
         self._call_conda(["env", "remove", "--name", env_id, "--yes", "--quiet"])
@@ -184,6 +227,7 @@ class Conda(object):
             }
             if disable_safety_checks:
                 env["CONDA_SAFETY_CHECKS"] = "disabled"
+
             return subprocess.check_output(
                 [self._bin] + args, stderr=subprocess.PIPE, env=dict(os.environ, **env)
             ).strip()

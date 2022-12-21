@@ -99,6 +99,7 @@ class CondaStepDecorator(StepDecorator):
         return deps
 
     def _step_deps(self):
+        # TODO(wolf) -- does this have to be this way?
         deps = [b"python==%s" % self._python_version().encode()]
         deps.extend(
             b"%s==%s" % (name.encode("ascii"), ver.encode("ascii"))
@@ -122,46 +123,52 @@ class CondaStepDecorator(StepDecorator):
             CondaStepDecorator.environments = CondaStepDecorator.conda.environments(
                 self.flow.name
             )
+        force = True
         if (
             force
             or env_id not in cached_deps
             or "cache_urls" not in cached_deps[env_id]
         ):
+            cloud_store = self.flow_datastore.TYPE in ("s3", "azure", "gs")
             if force or env_id not in cached_deps:
                 deps = self._step_deps()
-                (exact_deps, urls, order) = self.conda.create(
+                (exact_deps, infos, order) = self.conda.create(
                     self.step,
                     env_id,
                     deps,
                     architecture=self.architecture,
                     disable_safety_checks=self.disable_safety_checks,
+                    create_local=not cloud_store,
                 )
                 payload = {
                     "explicit": exact_deps,
                     "deps": [d.decode("ascii") for d in deps],
-                    "urls": urls,
+                    "urls": [i['url'] for i in infos],
                     "order": order,
+                    "infos": infos
                 }
             else:
                 payload = cached_deps[env_id]
 
-            if (
-                self.flow_datastore.TYPE in ("s3", "azure", "gs")
-                and "cache_urls" not in payload
-            ):
-                payload["cache_urls"] = self._cache_env()
+            # if (
+            #     # Note: should that be a method / constant on the datastore (ds.is_cloud == True?)
+            #     cloud_store
+            #     and "cache_urls" not in payload
+            # ):
+            payload["cache_urls"] = self._cache_env(payload)
             write_to_conda_manifest(ds_root, self.flow.name, env_id, payload)
             CondaStepDecorator.environments = CondaStepDecorator.conda.environments(
                 self.flow.name
             )
         return env_id
 
-    def _cache_env(self):
+    def _cache_env(self, payload=None):
         # Move here to avoid circular imports
         from metaflow.plugins import DATASTORES
-
+        print("Caching env!")
         def _download(entry):
             url, local_path = entry
+            print(url, local_path)
             with requests.get(url, stream=True) as r:
                 with open(local_path, "wb") as f:
                     shutil.copyfileobj(r.raw, f)
@@ -169,15 +176,18 @@ class CondaStepDecorator(StepDecorator):
         env_id = self._env_id()
         files = []
         to_download = []
-        for package_info in self.conda.package_info(env_id):
+        for package_info in payload["infos"]:
+            # strip fn from filename?
             url = urlparse(package_info["url"])
+
             path = os.path.join(
                 url.netloc,
                 url.path.lstrip("/"),
                 package_info["md5"],
                 package_info["fn"],
             )
-            tarball_path = package_info["package_tarball_full_path"]
+
+            tarball_path = package_info["fn"]
             if tarball_path.endswith(".conda"):
                 # Conda doesn't set the metadata correctly for certain fields
                 # when the underlying OS is spoofed.

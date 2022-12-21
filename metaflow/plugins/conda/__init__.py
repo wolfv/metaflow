@@ -30,6 +30,7 @@ def read_conda_manifest(ds_root, flow_name):
 
 
 def write_to_conda_manifest(ds_root, flow_name, key, value):
+    # print(key, value)
     path = get_conda_manifest_path(ds_root, flow_name)
     try:
         os.makedirs(os.path.dirname(path))
@@ -84,6 +85,7 @@ def get_conda_package_root(datastore_type):
         else:
             return CONDA_PACKAGE_GSROOT
     else:
+        return os.path.expanduser("~/.metaflow/condacache")
         raise MetaflowInternalError(
             msg="Unsupported storage backend '%s' for working with Conda"
             % (datastore_type,)
